@@ -24,7 +24,6 @@ export class OpenSpaAccessory {
       .getService(this.platform.Service.AccessoryInformation)!
       .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Ungodly Design')
       .setCharacteristic(this.platform.Characteristic.Name, 'OpenSpa')
-      .setCharacteristic(this.platform.Characteristic.ConfiguredName, `${this.config.name}`)
       .setCharacteristic(this.platform.Characteristic.Model, 'v1.0')
       .setCharacteristic(this.platform.Characteristic.SerialNumber, `${this.config.serial}`);
 
@@ -212,7 +211,6 @@ export class OpenSpaAccessory {
       this.accessory.getService(subtype) || this.accessory.addService(this.platform.Service.Switch, name, subtype);
     switchService.getCharacteristic(this.platform.Characteristic.On).onSet(onSetHandler);
     switchService.setCharacteristic(this.platform.Characteristic.Name, name);
-    switchService.setCharacteristic(this.platform.Characteristic.ConfiguredName, name);
     return switchService;
   }
 
@@ -228,7 +226,6 @@ export class OpenSpaAccessory {
 
     // Set service name
     thermostatService.setCharacteristic(this.platform.Characteristic.Name, name);
-    thermostatService.setCharacteristic(this.platform.Characteristic.ConfiguredName, name);
 
     // Restrict target states to "Off" and "Heat"
     thermostatService
@@ -254,49 +251,17 @@ export class OpenSpaAccessory {
     const maxTemperature =
       subtype === 'sauna-thermostat' ? this.config.saunaMaxTemperature : this.config.steamMaxTemperature;
 
-    // Determine the appropriate minStep based on the current TemperatureDisplayUnits
-    const displayUnits = thermostatService.getCharacteristic(this.platform.Characteristic.TemperatureDisplayUnits).value;
-    const minStep = displayUnits === this.platform.Characteristic.TemperatureDisplayUnits.FAHRENHEIT ? 1 : 0.5; // 1°F or 0.5°C
-
     thermostatService
       .getCharacteristic(this.platform.Characteristic.TargetTemperature)
       .setProps({
         minValue: 0,
         maxValue: maxTemperature,
-        minStep: minStep, // Use the calculated minStep
+        minStep: 0.5,
       })
       .onSet((value) => {
         temperatureSetHandler(value); // Pass the value directly as Celsius
       });
 
-    thermostatService.getCharacteristic(this.platform.Characteristic.TemperatureDisplayUnits)
-      .on('change', (newUnits) => {
-        const updatedMinStep = newUnits.newValue === this.platform.Characteristic.TemperatureDisplayUnits.FAHRENHEIT ? 1 : 0.5;
-        thermostatService
-          .getCharacteristic(this.platform.Characteristic.TargetTemperature)
-          .setProps({
-            minStep: updatedMinStep,
-          });
-
-        // Update current temperature and target temperature to match new display units
-        let currentTemperature = thermostatService.getCharacteristic(this.platform.Characteristic.CurrentTemperature).value;
-        let targetTemperature = thermostatService.getCharacteristic(this.platform.Characteristic.TargetTemperature).value;
-
-        let newCurrentTemperature = this.getTemperatureInDisplayUnits(currentTemperature as number, thermostatService);
-        let newTargetTemperature = this.getTemperatureInDisplayUnits(targetTemperature as number, thermostatService);
-
-        const maxTemperature = newUnits.newValue === this.platform.Characteristic.TemperatureDisplayUnits.FAHRENHEIT
-          ? this.convertToFahrenheit(this.config.saunaMaxTemperature)
-          : this.config.saunaMaxTemperature;
-
-        // Ensure the target temperature does not exceed maxTemperature
-        if (newTargetTemperature > maxTemperature) {
-          newTargetTemperature = maxTemperature;
-        }
-
-        thermostatService.updateCharacteristic(this.platform.Characteristic.CurrentTemperature, newCurrentTemperature);
-        thermostatService.updateCharacteristic(this.platform.Characteristic.TargetTemperature, newTargetTemperature);
-      });
     return thermostatService;
   }
 
@@ -306,7 +271,6 @@ export class OpenSpaAccessory {
       this.accessory.getService(subtype) ||
       this.accessory.addService(this.platform.Service.TemperatureSensor, name, subtype);
     tempService.setCharacteristic(this.platform.Characteristic.Name, name);
-    tempService.setCharacteristic(this.platform.Characteristic.ConfiguredName, name);
     return tempService;
   }
 
@@ -316,7 +280,6 @@ export class OpenSpaAccessory {
       this.accessory.getService(subtype) ||
       this.accessory.addService(this.platform.Service.ContactSensor, name, subtype);
     contactService.setCharacteristic(this.platform.Characteristic.Name, name);
-    contactService.setCharacteristic(this.platform.Characteristic.ConfiguredName, name);
     return contactService;
   }
 
@@ -432,7 +395,6 @@ export class OpenSpaAccessory {
   // Start a system w/ timeout. Update thermostat state & current to OFF.
   private startSystem(system: SystemType) {
     this.setPowerState(system, true);
-    this.monitorDoors(system, true);
 
     // [ToDo] Generalize this getService to work for thermostats AND switches
     // Update the CurrentHeatingCoolingState to HEAT
@@ -446,6 +408,7 @@ export class OpenSpaAccessory {
 
     // Clear the appropriate timer based on the system
     if (system === 'sauna') {
+      this.monitorDoors(system, true);
       const timeout = this.config.saunaTimeout;
       if (this.saunaTimer) {
         clearTimeout(this.saunaTimer);
@@ -561,15 +524,14 @@ export class OpenSpaAccessory {
             }
 
             // Convert the ADC reading to celsius
-            const temperatureCelsius = this.calculateTemperature(reading.value, sensor.resistanceAt25C, sensor.bValue);
+            const temperatureCelsius = Math.round(this.calculateTemperature(reading.value, sensor.resistanceAt25C, sensor.bValue));
 
             const thermistorService = this.temperatureSensors.get(sensor.name);
             if (thermistorService) {
-              const displayTemperature = this.getTemperatureInDisplayUnits(temperatureCelsius, thermistorService);
 
-              // Check for invalid readings (e.g., sensor disconnected)
+              // Invalid Temperature (e.g., sensor disconnected)
               if (this.InvalidTemperatureReading(temperatureCelsius)) {
-                this.platform.log.warn(`${sensor.name} Temperature: ${Math.round(displayTemperature)} °C (invalid)`);
+                this.platform.log.warn(`${sensor.name} Temperature: ${temperatureCelsius} °C (invalid)`);
 
                 // Update the HomeKit characteristic with the current temperature
                 thermistorService.updateCharacteristic(this.platform.Characteristic.CurrentTemperature, 0);
@@ -583,13 +545,13 @@ export class OpenSpaAccessory {
                 return;
               }
 
-              // Update the HomeKit characteristic with the current temperature
+              // Valid Temperature. Update the HomeKit characteristic with the current temperature.
               thermistorService.updateCharacteristic(
                 this.platform.Characteristic.CurrentTemperature,
-                displayTemperature,
+                temperatureCelsius,
               );
 
-              this.platform.log.info(`${sensor.name} Temperature: ${Math.round(displayTemperature)} °C`);
+              this.platform.log.info(`${sensor.name} Temperature: ${temperatureCelsius} °C`);
             }
 
             // Perform actions based on the temperature reading
@@ -876,17 +838,5 @@ export class OpenSpaAccessory {
     steinhart -= 273.15; // convert to Celsius
 
     return steinhart;
-  }
-
-  private getTemperatureInDisplayUnits(temperatureCelsius: number, service: Service): number {
-    const displayUnits = service.getCharacteristic(this.platform.Characteristic.TemperatureDisplayUnits).value;
-    return displayUnits === this.platform.Characteristic.TemperatureDisplayUnits.FAHRENHEIT
-      ? this.convertToFahrenheit(temperatureCelsius)
-      : temperatureCelsius;
-  }
-
-  // Utility function to convert Celsius to Fahrenheit
-  private convertToFahrenheit(celsius: number): number {
-    return celsius * 1.8 + 32;
   }
 }
