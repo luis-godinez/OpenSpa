@@ -50,6 +50,7 @@
     "typescript": "^5.5.4"
   },
   "dependencies": {
+    "homebridge-config-ui-x": "^4.62.0",
     "mcp-spi-adc": "^3.2.0",
     "rpio": "^2.4.2"
   }
