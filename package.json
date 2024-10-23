@@ -44,7 +44,6 @@
     "mcp-spi-adc": "^3.2.0",
     "nodemon": "^3.1.4",
     "rimraf": "^6.0.1",
-    "rpio": "^2.4.2",
     "ts-jest": "^29.2.4",
     "ts-node": "^10.9.2",
     "typescript": "^5.5.4"
@@ -52,6 +51,6 @@
   "dependencies": {
     "homebridge-config-ui-x": "^4.62.0",
     "mcp-spi-adc": "^3.2.0",
-    "rpio": "^2.4.2"
+    "onoff": "^6.0.3"
   }
 }

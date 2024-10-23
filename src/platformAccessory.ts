@@ -2,7 +2,7 @@
 
 import { Service, PlatformAccessory, CharacteristicValue } from 'homebridge';
 import { OpenSpaPlatform } from './platform.js';
-import rpio from 'rpio';
+import { Gpio } from 'onoff';
 import { openMcp3008, McpInterface, McpReading, EightChannels } from 'mcp-spi-adc';
 import { OpenSpaConfig, thermistorConfig, SystemType } from './settings.js';
 
@@ -26,9 +26,6 @@ export class OpenSpaAccessory {
       .setCharacteristic(this.platform.Characteristic.Name, 'OpenSpa')
       .setCharacteristic(this.platform.Characteristic.Model, 'v1.0')
       .setCharacteristic(this.platform.Characteristic.SerialNumber, `${this.config.serial}`);
-
-    // Initialize RPIO with desired options
-    rpio.init({ mapping: 'gpio' });
 
     // Initialize peripherals with error handling and timeouts
     this.initializePeripherals()
@@ -103,30 +100,28 @@ export class OpenSpaAccessory {
     try {
       // Initialize GPIO power pins, force power relays to off
       this.config.gpioPowerPins.forEach((pinConfig) => {
-        rpio.open(pinConfig.set, rpio.OUTPUT, rpio.LOW); // Open 'set' pin as OUTPUT and set to LOW
-        rpio.open(pinConfig.reset, rpio.OUTPUT, rpio.LOW); // Open 'reset' pin as OUTPUT and set to LOW
-        rpio.write(pinConfig.set, rpio.LOW); // Force set pin to LOW
-        rpio.write(pinConfig.reset, rpio.HIGH); // Force reset pin to HIGH (disables relay)
+        const setPin = new Gpio(pinConfig.set, 'out');
+        const resetPin = new Gpio(pinConfig.reset, 'out');
+        setPin.writeSync(0); // Set pin to LOW
+        resetPin.writeSync(1); // Set pin to HIGH (disables relay)
       });
 
       // Initialize relay pins
       this.config.relayPins.forEach((config) => {
         config.GPIO.forEach((pin) => {
-          // Open pins associated with systems like sauna, steam, light, fan as OUTPUT and set to LOW
-          rpio.open(pin, rpio.OUTPUT, rpio.LOW); // Open as OUTPUT and set to LOW
+          const relayPin = new Gpio(pin, 'out');
+          relayPin.writeSync(0); // Set pin to LOW
         });
       });
 
       // Initialize sauna door pin
       if (this.config.saunaDoorPin !== undefined) {
-        const pullState = this.config.saunaDoorNO ? rpio.PULL_DOWN : rpio.PULL_UP;
-        rpio.open(this.config.saunaDoorPin, rpio.INPUT, pullState); // Open as INPUT with appropriate pull state
+        new Gpio(this.config.saunaDoorPin, 'in', this.config.saunaDoorNO ? 'rising' : 'falling');
       }
 
       // Initialize steam door pin
       if (this.config.steamDoorPin !== undefined) {
-        const pullState = this.config.steamDoorNO ? rpio.PULL_DOWN : rpio.PULL_UP;
-        rpio.open(this.config.steamDoorPin, rpio.INPUT, pullState); // Open as INPUT with appropriate pull state
+        new Gpio(this.config.steamDoorPin, 'in', this.config.steamDoorNO ? 'rising' : 'falling');
       }
     } catch (error) {
       this.platform.log.error('Failed to initialize GPIO pins:', error);
@@ -138,7 +133,8 @@ export class OpenSpaAccessory {
   private cleanupGPIO() {
     this.config.relayPins.forEach((config) => {
       config.GPIO.forEach((pin) => {
-        rpio.close(pin);
+        const relayPin = new Gpio(pin, 'out');
+        relayPin.unexport();
       });
     });
   }
@@ -290,7 +286,8 @@ export class OpenSpaAccessory {
 
     if (lightPins && lightPins.length > 0) {
       lightPins.forEach((pin) => {
-        rpio.write(pin, value ? rpio.HIGH : rpio.LOW);
+        const relayPin = new Gpio(pin, 'out');
+        relayPin.writeSync(value ? 1 : 0);
       });
     } else {
       this.platform.log.warn('No GPIO pins configured for light.');
@@ -308,7 +305,8 @@ export class OpenSpaAccessory {
 
     if (fanPins && fanPins.length > 0) {
       fanPins.forEach((pin) => {
-        rpio.write(pin, value ? rpio.HIGH : rpio.LOW);
+        const relayPin = new Gpio(pin, 'out');
+        relayPin.writeSync(value ? 1 : 0);
       });
     } else {
       this.platform.log.warn('No GPIO pins configured for fan.');
@@ -475,23 +473,11 @@ export class OpenSpaAccessory {
       return;
     }
 
-    const thermostatService = this.accessory.getService(`${system}-thermostat`);
-    if (thermostatService) {
-      // Update the CurrentHeatingCoolingState
-      thermostatService
-        .getCharacteristic(this.platform.Characteristic.CurrentHeatingCoolingState)
-        .updateValue(
-          state
-            ? this.platform.Characteristic.CurrentHeatingCoolingState.HEAT
-            : this.platform.Characteristic.CurrentHeatingCoolingState.OFF,
-        );
-    }
-
-    // Set the GPIO pins based on the state
-    const powerState = state ? rpio.HIGH : rpio.LOW;
-    GPIO?.forEach((pin, index) => {
+    const powerState = state ? 1 : 0;
+    GPIO?.forEach((pin) => {
+      const relayPin = new Gpio(pin, 'out');
       this.platform.log.info(`${system}: setPowerState --> ${pin} ${state ? 'ON' : 'OFF'}`);
-      rpio.write(pin, powerState);
+      relayPin.writeSync(powerState);
     });
   }
 
@@ -589,9 +575,11 @@ export class OpenSpaAccessory {
     if (!this.relaysEnabled) {
       for (const [index, pinConfig] of this.config.gpioPowerPins.entries()) {
         this.platform.log.info(`Enabling 120V Relay: Set Pin ${pinConfig.set}, Reset Pin ${pinConfig.reset}`);
-        rpio.write(pinConfig.reset, rpio.LOW); // Ensure the reset pin is LOW
+        const resetPin = new Gpio(pinConfig.reset, 'out');
+        const setPin = new Gpio(pinConfig.set, 'out');
+        resetPin.writeSync(0); // Ensure the reset pin is LOW
         await this.delay(20); // Wait to ensure the reset has taken effect
-        rpio.write(pinConfig.set, rpio.HIGH); // Set pin HIGH to enable the relay
+        setPin.writeSync(1); // Set pin HIGH to enable the relay
         await this.delay(20); // Ensure the relay has fully engaged
         this.platform.log.info(`Relay ${index + 1} enabled.`);
       }
@@ -603,9 +591,11 @@ export class OpenSpaAccessory {
     if (this.relaysEnabled) {
       for (const [index, pinConfig] of this.config.gpioPowerPins.entries()) {
         this.platform.log.info(`Disabling 120V Relay: Set Pin ${pinConfig.set}, Reset Pin ${pinConfig.reset}`);
-        rpio.write(pinConfig.set, rpio.LOW); // Ensure the set pin is LOW
+        const setPin = new Gpio(pinConfig.set, 'out');
+        const resetPin = new Gpio(pinConfig.reset, 'out');
+        setPin.writeSync(0); // Ensure the set pin is LOW
         await this.delay(20); // Wait to ensure the set has taken effect
-        rpio.write(pinConfig.reset, rpio.HIGH); // Reset pin HIGH to disable the relay
+        resetPin.writeSync(1); // Reset pin HIGH to disable the relay
         await this.delay(20); // Ensure the relay has fully disengaged
         this.platform.log.info(`Relay ${index + 1} disabled.`);
       }
@@ -718,7 +708,8 @@ export class OpenSpaAccessory {
     this.config.relayPins.forEach((config) => {
       // For each system, turn off all associated GPIO
       config.GPIO.forEach((pin) => {
-        rpio.write(pin, rpio.LOW);
+        const relayPin = new Gpio(pin, 'out');
+        relayPin.writeSync(0);
       });
     });
 
@@ -767,37 +758,39 @@ export class OpenSpaAccessory {
             return;
           }
 
-          rpio.poll(
-            doorSensor,
-            () => {
-              const doorOpen = inverse ? rpio.read(doorSensor) === 0 : rpio.read(doorSensor) === 1;
-              this.platform.log.info(`${system} Door ${doorOpen ? 'Open' : 'Closed'}`);
+          const doorPin = new Gpio(doorSensor, 'in', 'both');
+          doorPin.watch((err, value) => {
+            if (err) {
+              this.platform.log.error(`Error watching ${system} door: ${err}`);
+              return;
+            }
 
-              const doorService = this.accessory.getService(`${system}-door`);
+            const doorOpen = inverse ? value === 0 : value === 1;
+            this.platform.log.info(`${system} Door ${doorOpen ? 'Open' : 'Closed'}`);
 
-              if (doorService) {
-                doorService.updateCharacteristic(
-                  this.platform.Characteristic.ContactSensorState,
-                  doorOpen
-                    ? this.platform.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
-                    : this.platform.Characteristic.ContactSensorState.CONTACT_DETECTED,
-                );
-              }
+            const doorService = this.accessory.getService(`${system}-door`);
 
-              const service = this.accessory.getService(`${system}-thermostat`);
+            if (doorService) {
+              doorService.updateCharacteristic(
+                this.platform.Characteristic.ContactSensorState,
+                doorOpen
+                  ? this.platform.Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
+                  : this.platform.Characteristic.ContactSensorState.CONTACT_DETECTED,
+              );
+            }
 
-              if (doorOpen && !allowOnWhileOpen) {
-                // Ensure the heater turns off if set to not operate with door open.
-                this.setPowerState(system, false);
-                this.platform.log.warn(`${system} power off due to door open.`);
-              } else if (!doorOpen && !allowOnWhileOpen) {
-                // Ensure the heater is resumed only when it was initially turned off due to the door open state
-                this.setPowerState(system, true);
-                this.platform.log.info(`${system} power resumed as door closed.`);
-              }
-            },
-            rpio.POLL_BOTH,
-          );
+            const service = this.accessory.getService(`${system}-thermostat`);
+
+            if (doorOpen && !allowOnWhileOpen) {
+              // Ensure the heater turns off if set to not operate with door open.
+              this.setPowerState(system, false);
+              this.platform.log.warn(`${system} power off due to door open.`);
+            } else if (!doorOpen && !allowOnWhileOpen) {
+              // Ensure the heater is resumed only when it was initially turned off due to the door open state
+              this.setPowerState(system, true);
+              this.platform.log.info(`${system} power resumed as door closed.`);
+            }
+          });
 
           // Mark the poll as registered
           this.doorPollRegistered[doorSensor] = true;
@@ -808,7 +801,9 @@ export class OpenSpaAccessory {
         // Unregister the poll if it exists
         if (this.doorPollRegistered[doorSensor]) {
           try {
-            rpio.poll(doorSensor, null);
+            const doorPin = new Gpio(doorSensor, 'in');
+            doorPin.unwatchAll();
+            doorPin.unexport();
             this.doorPollRegistered[doorSensor] = false;
             this.platform.log.info(`Stopped monitoring ${system} door.`);
           } catch (error) {
