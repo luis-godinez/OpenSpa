@@ -16,7 +16,7 @@ OpenSpa is designed to provide a generic sauna controller that allows users to l
 
 ## Hardware
 
-[OpenSpa Controller](https://ungodly.design/products/openspa)
+[OpenSpa Controller](https://ungodly.design/products/opensauna)
 
 ![OpenSpaController](https://i.imgur.com/GPK4ySn.jpeg)
 
